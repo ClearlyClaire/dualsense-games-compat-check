@@ -174,21 +174,24 @@ BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, 
         hr = IMMDevice_Activate(dev, &IID_IAudioClient, CLSCTX_ALL, NULL, (LPVOID*)&audio_client);
         if (FAILED(hr)) {
             IMMDevice_Release(dev);
-            CoTaskMemFree(devid);
+            CoTaskMemFree(*devid);
+            *devid = NULL;
             continue;
         }
 
         if (FAILED(IAudioClient_GetMixFormat(audio_client, fmt))) {
             IAudioClient_Release(audio_client);
             IMMDevice_Release(dev);
-            CoTaskMemFree(devid);
+            CoTaskMemFree(*devid);
+            *devid = NULL;
             continue;
         }
 
         if (FAILED(IAudioClient_GetDevicePeriod(audio_client, defperiod, minperiod))) {
             IAudioClient_Release(audio_client);
             IMMDevice_Release(dev);
-            CoTaskMemFree(devid);
+            CoTaskMemFree(*devid);
+            *devid = NULL;
             continue;
         }
 
