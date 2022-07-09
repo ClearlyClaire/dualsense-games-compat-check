@@ -344,7 +344,7 @@ int main(void)
             if (fmt->nChannels != 4)
                 wprintf(L"WARNING: audio device does not have 4 channels, this is going to cause issues\n");
         } else {
-            wprintf(L"WARNING: audio output not found, haptics and speaker out won't work for Final Fantasy XIV Online and Final Fantasy VII Remake Intergrade\n");
+            wprintf(L"WARNING: audio output not found, haptics won't work for Ghostwire: Tokyo, Deathloop and other Wwise-based games\n");
         }
     } else {
         wprintf(L"\n\nWARNING: Cannot search for audio output based on ContainerID (audio-based haptics will not work in Ghostwire: Tokyo, Deathloop, ...)\n");
