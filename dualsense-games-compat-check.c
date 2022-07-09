@@ -148,7 +148,7 @@ BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, 
         if (friendly_name) {
             PropVariantInit(&v);
             hr = IPropertyStore_GetValue(props, &PKEY_Device_FriendlyName, &v);
-            if (FAILED(hr) || wcscmp(v.pwszVal, friendly_name)) {
+            if (FAILED(hr) || v.vt != VT_LPWSTR && !v.pwszVal || !wcsstr(v.pwszVal, friendly_name)) {
                 IMMDevice_Release(dev);
                 continue;
             }
@@ -313,8 +313,6 @@ int main(void)
         StringFromGUID2(containerID, wstr, 39*2);
         wprintf(L"  ContainerID: %S\n", wstr);
     }
-    if (!product || wcscmp(product, L"Wireless Controller"))
-        wprintf(L"WARNING: Product name not set to 'Wireless Controller', this may cause issues in some games\n");
     if (!containerID)
         wprintf(L"WARNING: ContainerID not set, although this is required for most games\n");
 
