@@ -33,6 +33,7 @@ BOOL find_hid_device(WORD vendor_id, WORD product_id, WCHAR **serial_number, WCH
         device_interface_data.cbSize = sizeof(SP_DEVICE_INTERFACE_DATA);
 
         if (SetupDiEnumDeviceInterfaces(device_info_set, NULL, &HIDInterfaceClassGuid, member_index, &device_interface_data)) {
+            WCHAR guidstr[39] = { 0, 0, };
             SP_DEVINFO_DATA devinfo_data;
             SP_DEVICE_INTERFACE_DETAIL_DATA_W *device_interface_detail_data = NULL;
             DWORD required_size;
@@ -55,6 +56,25 @@ BOOL find_hid_device(WORD vendor_id, WORD product_id, WCHAR **serial_number, WCH
             if (!device_interface_detail_data->DevicePath) {
                 free(device_interface_detail_data);
                 continue;
+            }
+
+            for (int j=0; ; j++) {
+                WCHAR buffer[4096];
+                if (!SetupDiEnumDeviceInfo(device_info_set, j, &devinfo_data))
+                    break;
+
+                /* I actually don't think that's how games find it, XInput and other stuff may be involved, but it should be a good enough shortcut */
+                if (!SetupDiGetDeviceInstanceIdW(device_info_set, &devinfo_data, buffer, 4096, &required_size))
+                    continue;
+
+                if (!wcsstr(buffer, L"HID\\VID_054C&PID_0CE6"))
+                    continue;
+
+                DWORD reg_data_type = 0;
+                /* query SPDRP_BASE_CONTAINERID */
+                if (!SetupDiGetDeviceRegistryPropertyW(device_info_set, &devinfo_data, 36, &reg_data_type, (PBYTE)guidstr, sizeof(guidstr), &required_size)) {
+                    guidstr[0] = 0;
+                }
             }
 
             HANDLE handle = CreateFileW(device_interface_detail_data->DevicePath, GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, 0);
@@ -82,17 +102,12 @@ BOOL find_hid_device(WORD vendor_id, WORD product_id, WCHAR **serial_number, WCH
                     *product = wcsdup(wstr);
                 }
 
-                CloseHandle(handle);
-
-                if (SetupDiEnumDeviceInfo(device_info_set, 0, &devinfo_data)) {
-                    /* query SPDRP_BASE_CONTAINERID */
-                    DWORD reg_data_type = 0;
-                    WCHAR guidstr[256];
-                    if (SetupDiGetDeviceRegistryPropertyW(device_info_set, &devinfo_data, 36, &reg_data_type, (PBYTE)guidstr, sizeof(guidstr), &required_size)) {
-                        *containerID = malloc(sizeof(GUID));
-                        CLSIDFromString(guidstr, *containerID);
-                    }
+                if (guidstr[0]) {
+                    *containerID = malloc(sizeof(GUID));
+                    CLSIDFromString(guidstr, *containerID);
                 }
+
+                CloseHandle(handle);
 
                 return TRUE;
             }
@@ -108,7 +123,7 @@ BOOL find_hid_device(WORD vendor_id, WORD product_id, WCHAR **serial_number, WCH
 }
 
 
-BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, LPWSTR *devid, WAVEFORMATEX **fmt, REFERENCE_TIME *defperiod, REFERENCE_TIME *minperiod) {
+BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, LPWSTR *devid, GUID **out_container_id, WAVEFORMATEX **fmt, REFERENCE_TIME *defperiod, REFERENCE_TIME *minperiod) {
     IMMDeviceEnumerator *it;
     IMMDeviceCollection *devs;
     HRESULT hr;
@@ -154,10 +169,14 @@ BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, 
             }
         }
 
-        if (container_id) {
+        if (container_id || out_container_id) {
             PropVariantInit(&v);
             hr = IPropertyStore_GetValue(props, &PKEY_Device_ContainerId, &v);
-            if (FAILED(hr) || v.vt != VT_CLSID || !IsEqualGUID(v.puuid, container_id))
+            if (SUCCEEDED(hr) && v.vt == VT_CLSID) {
+                *out_container_id = malloc(sizeof(GUID));
+                memcpy(*out_container_id, v.puuid, sizeof(GUID));
+            }
+            if (container_id && (FAILED(hr) || v.vt != VT_CLSID || !IsEqualGUID(v.puuid, container_id)))
             {
                IMMDevice_Release(dev);
                continue;
@@ -296,6 +315,7 @@ int main(void)
 {
     WCHAR *serial_number = NULL, *manufacturer = NULL, *product = NULL;
     GUID *containerID = NULL;
+    GUID *audio_containerID = NULL;
 
     /* First, find the controller HID */
     wprintf(L"Searching for the HID controller...\n");
@@ -325,9 +345,14 @@ int main(void)
     LPWSTR devid = NULL;
 
     wprintf(L"\n\nSearching for audio output based on FriendlyName (Final Fantasy XIV Online, Final Fantasy VII Remake Intergrade)...\n");
-    if (find_audio_render_by(L"Wireless Controller", NULL, &devid, &fmt, &defperiod, &minperiod)) {
+    if (find_audio_render_by(L"Wireless Controller", NULL, &devid, &audio_containerID, &fmt, &defperiod, &minperiod)) {
         wprintf(L"Found audio output!\n");
         wprintf(L"  Device ID: %S\n", devid);
+        if (audio_containerID) {
+            WCHAR wstr[39];
+            StringFromGUID2(audio_containerID, wstr, 39*2);
+            wprintf(L"  ContainerID: %S\n", wstr);
+        }
         dump_fmt(fmt);
         if (fmt->nChannels != 4)
             wprintf(L"WARNING: audio device does not have 4 channels, this is going to cause issues\n");
@@ -337,9 +362,14 @@ int main(void)
 
     if(containerID) {
         wprintf(L"\n\nSearching for audio output based on ContainerID (audio-based haptics in Ghostwire: Tokyo, Deathloop, ...)\n");
-        if (find_audio_render_by(NULL, containerID, &devid, &fmt, &defperiod, &minperiod)) {
+        if (find_audio_render_by(NULL, containerID, &devid, &audio_containerID, &fmt, &defperiod, &minperiod)) {
             wprintf(L"Found audio output!\n");
             wprintf(L"  Device ID: %S\n", devid);
+            if (audio_containerID) {
+                WCHAR wstr[39];
+                StringFromGUID2(audio_containerID, wstr, 39*2);
+                wprintf(L"  ContainerID: %S\n", wstr);
+            }
             dump_fmt(fmt);
             if (fmt->nChannels != 4)
                 wprintf(L"WARNING: audio device does not have 4 channels, this is going to cause issues\n");
