@@ -43,7 +43,7 @@ BOOL find_hid_device(WORD vendor_id, WORD product_id, WCHAR **serial_number, WCH
             /* Get required size */
             SetupDiGetDeviceInterfaceDetailW(device_info_set, &device_interface_data, NULL, 0, &required_size, NULL);
 
-            device_interface_detail_data = calloc(1, sizeof(required_size));
+            device_interface_detail_data = calloc(1, required_size);
             device_interface_detail_data->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
 
             /* Get actual interface detail data */
@@ -103,6 +103,8 @@ BOOL find_hid_device(WORD vendor_id, WORD product_id, WCHAR **serial_number, WCH
                 break;
         }
     }
+
+    return FALSE;
 }
 
 
@@ -221,7 +223,7 @@ BOOL deathloop_find_speaker_wip() {
             /* Get required size */
             SetupDiGetDeviceInterfaceDetailW(device_info_set, &device_interface_data, NULL, 0, &required_size, NULL);
 
-            device_interface_detail_data = calloc(1, sizeof(required_size));
+            device_interface_detail_data = calloc(1, required_size);
             device_interface_detail_data->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
 
             /* Get actual interface detail data */
