@@ -264,6 +264,7 @@ BOOL deathloop_find_speaker_wip() {
             StringFromCLSID(&device_interface_data.InterfaceClassGuid, &guidstr);
 
             wprintf(L"Device %d:\n", member_index);
+            wprintf(L"  Flags: %04x\n", device_interface_data.Flags);
             wprintf(L"  InterfaceClassGuid: %S\n", guidstr);
             wprintf(L"  Path: %S\n", device_interface_detail_data->DevicePath);
             wprintf(L"  InstanceID: %S\n", buffer);
