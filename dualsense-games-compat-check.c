@@ -123,11 +123,13 @@ BOOL find_hid_device(WORD vendor_id, WORD product_id, WCHAR **serial_number, WCH
 }
 
 
-BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, LPWSTR *devid, GUID **out_container_id, WAVEFORMATEX **fmt, REFERENCE_TIME *defperiod, REFERENCE_TIME *minperiod) {
+BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, int *nb_matches, LPWSTR *devid, GUID **out_container_id, WAVEFORMATEX **fmt, REFERENCE_TIME *defperiod, REFERENCE_TIME *minperiod) {
     IMMDeviceEnumerator *it;
     IMMDeviceCollection *devs;
     HRESULT hr;
     UINT count;
+
+    *nb_matches = 0;
 
     hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
                           &IID_IMMDeviceEnumerator, (void*) &it);
@@ -183,6 +185,8 @@ BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, 
             }
         }
 
+        *nb_matches += 1;
+
         hr = IMMDevice_GetId(dev, devid);
         if (FAILED(hr))
         {
@@ -217,6 +221,7 @@ BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, 
         IAudioClient_Release(audio_client);
         IMMDevice_Release(dev);
         IMMDeviceCollection_Release(devs);
+
         return TRUE;
     }
     IMMDeviceCollection_Release(devs);
@@ -317,6 +322,7 @@ int main(void)
     WCHAR *serial_number = NULL, *manufacturer = NULL, *product = NULL;
     GUID *containerID = NULL;
     GUID *audio_containerID = NULL;
+    int nb_matches;
 
     /* First, find the controller HID */
     wprintf(L"Searching for the HID controller...\n");
@@ -346,7 +352,7 @@ int main(void)
     LPWSTR devid = NULL;
 
     wprintf(L"\n\nSearching for audio output based on FriendlyName (Final Fantasy XIV Online, Final Fantasy VII Remake Intergrade)...\n");
-    if (find_audio_render_by(L"Wireless Controller", NULL, &devid, &audio_containerID, &fmt, &defperiod, &minperiod)) {
+    if (find_audio_render_by(L"Wireless Controller", NULL, &nb_matches, &devid, &audio_containerID, &fmt, &defperiod, &minperiod)) {
         wprintf(L"Found audio output!\n");
         wprintf(L"  Device ID: %S\n", devid);
         if (audio_containerID) {
@@ -363,7 +369,7 @@ int main(void)
 
     if(containerID) {
         wprintf(L"\n\nSearching for audio output based on ContainerID (audio-based haptics in Ghostwire: Tokyo, Deathloop, ...)\n");
-        if (find_audio_render_by(NULL, containerID, &devid, &audio_containerID, &fmt, &defperiod, &minperiod)) {
+        if (find_audio_render_by(NULL, containerID, &nb_matches, &devid, &audio_containerID, &fmt, &defperiod, &minperiod)) {
             wprintf(L"Found audio output!\n");
             wprintf(L"  Device ID: %S\n", devid);
             if (audio_containerID) {
@@ -374,6 +380,8 @@ int main(void)
             dump_fmt(fmt);
             if (fmt->nChannels != 4)
                 wprintf(L"WARNING: audio device does not have 4 channels, this is going to cause issues\n");
+            if (nb_matches != 1)
+                wprintf(L"WARNING: the audio device was not the first match, this will make games like Deathloop fail to use it\n");
         } else {
             wprintf(L"WARNING: audio output not found, haptics won't work for Ghostwire: Tokyo, Deathloop and other Wwise-based games\n");
         }
