@@ -16,6 +16,8 @@
 
 #include <hidsdi.h>
 
+#include <xaudio2.h>
+
 DEFINE_PROPERTYKEY(PKEY_Device_FriendlyName, 0xa45c254e, 0xdf1c, 0x4efd, 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0, 14);
 DEFINE_PROPERTYKEY(PKEY_Device_ContainerId, 0x8c7ed206,0x3f8a,0x4827,0xb3,0xab,0xae,0x9e,0x1f,0xae,0xfc,0x6c, 2);
 
@@ -229,9 +231,29 @@ BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, 
     return FALSE;
 }
 
-BOOL deathloop_find_speaker_wip() {
+BOOL deathloop_find_speaker(LPWSTR expected_id) {
+    HMODULE mXAudio2;
+    WCHAR expected_instance_id[] = L"SWD\\MMDEVAPI\\{0.0.0.00000000}.{12345678-1234-1234-1234-123456789123}";
     HDEVINFO device_info_set = INVALID_HANDLE_VALUE;
+    SP_DEVICE_INTERFACE_DETAIL_DATA_W *device_interface_detail_data = NULL;
     device_info_set = SetupDiGetClassDevsExW(&AudioRendererInterfaceClassGuid, NULL, 0, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE, NULL, NULL, 0);
+
+    if (!(mXAudio2 = LoadLibraryExW(L"XAudio2_9.dll", NULL, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS))
+            && !(mXAudio2 = LoadLibraryExW(L"XAudio2_8.dll", NULL, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS))) {
+        wprintf(L"INFO: could not load XAudio2 (0x%x), Deathloop will work by falling back to other APIs, but other games might have issues\n", GetLastError());
+        return FALSE;
+    }
+
+    if (!expected_id)
+        return FALSE;
+
+    if (wcslen(expected_id) != 55) {
+        wprintf(L"WARNING: invalid MMDevice ID: %S\n", expected_id);
+        return FALSE;
+    }
+
+    wcscpy(expected_instance_id+13, expected_id);
+    wcsupr(expected_instance_id);
 
     for (DWORD member_index = 0; ; member_index++) {
         SP_DEVICE_INTERFACE_DATA device_interface_data;
@@ -241,7 +263,6 @@ BOOL deathloop_find_speaker_wip() {
 
         if (SetupDiEnumDeviceInterfaces(device_info_set, NULL, &AudioRendererInterfaceClassGuid, member_index, &device_interface_data)) {
             SP_DEVINFO_DATA devinfo_data;
-            SP_DEVICE_INTERFACE_DETAIL_DATA_W *device_interface_detail_data = NULL;
             DWORD required_size;
 
             memset(&devinfo_data, 0x0, sizeof(devinfo_data));
@@ -256,28 +277,40 @@ BOOL deathloop_find_speaker_wip() {
             /* Get actual interface detail data */
             if (!SetupDiGetDeviceInterfaceDetailW(device_info_set, &device_interface_data, device_interface_detail_data, required_size, NULL, &devinfo_data)) {
                 free(device_interface_detail_data);
+                device_interface_detail_data = NULL;
                 continue;
             }
 
             WCHAR buffer[4096];
             if (!SetupDiGetDeviceInstanceIdW(device_info_set, &devinfo_data, buffer, 4096, &required_size)) {
                 free(device_interface_detail_data);
+                device_interface_detail_data = NULL;
                 continue;
             }
 
-            WCHAR *guidstr;
-            StringFromCLSID(&device_interface_data.InterfaceClassGuid, &guidstr);
+            if (wcscmp(buffer, expected_instance_id) == 0) {
+                break;
+            }
 
-            wprintf(L"Device %d:\n", member_index);
-            wprintf(L"  Flags: %04x\n", device_interface_data.Flags);
-            wprintf(L"  InterfaceClassGuid: %S\n", guidstr);
-            wprintf(L"  Path: %S\n", device_interface_detail_data->DevicePath);
-            wprintf(L"  InstanceID: %S\n", buffer);
+            free(device_interface_detail_data);
+            device_interface_detail_data = NULL;
         } else {
             if (ERROR_NO_MORE_ITEMS == GetLastError());
                 break;
         }
     }
+
+    if (device_interface_detail_data && device_interface_detail_data->DevicePath) {
+        /* TODO: not sure how to use XAudio2 in C */
+        // IXAudio2 *xaudio2 = NULL;
+        // XAudio2Create(&xaudio2, 0, XAUDIO2_DEFAULT_PROCESSOR);
+        // xaudio2->CreateMasteringVoice(…, XAUDIO2_DEFAULT_CHANNELS, 48000, 0, device_interface_detail_data->DevicePath, 0, AudioCategory_GameEffects)
+        wprintf(L"WARNING: Speaker will work in Deathloop only if it manages to open %S in XAudio2::CreateMasteringVoice (not implemented at the moment I'm writing this)\n", device_interface_detail_data->DevicePath);
+    } else {
+        wprintf(L"WARNING: Audio device not found in SetupApi, Deathloop will fall back to default output.\n");
+    }
+
+    FreeLibrary(mXAudio2);
 }
 
 void dump_fmt(WAVEFORMATEX *fmt) {
@@ -389,8 +422,12 @@ int main(void)
         wprintf(L"\n\nWARNING: Cannot search for audio output based on ContainerID (audio-based haptics will not work in Ghostwire: Tokyo, Deathloop, ...)\n");
     }
 
-    wprintf(L"\n\nWIP/debugging deathloop speaker access\n");
-    deathloop_find_speaker_wip();
+    if (devid) {
+        wprintf(L"\n\nOpening audio output through SetupDi+XAudio2 (Deathloop):\n");
+        deathloop_find_speaker(devid);
+    } else {
+        wprintf(L"\n\nWARNING: Audio device unknown, cannot be searched for speaker access\n");
+    }
 
     return 0;
 }
