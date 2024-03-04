@@ -32,6 +32,12 @@ struct DualsenseInfo {
   WCHAR *product;
   WCHAR *instanceID;
   GUID *containerID;
+  WCHAR *class;
+  WCHAR *driverKey;
+  WCHAR *friendlyName;
+  WCHAR *deviceDesc;
+  GUID *classGUID;
+  WCHAR *hardwareID;
 };
 
 void fill_dualsense_hidd_attributes(struct DualsenseInfo *dualsense, HANDLE handle) {
@@ -54,7 +60,7 @@ void fill_dualsense_hidd_attributes(struct DualsenseInfo *dualsense, HANDLE hand
 void fill_dualsense_hid_setupdi_props(struct DualsenseInfo *dualsense, HDEVINFO device_info_set) {
     DWORD required_size;
     WCHAR guidstr[39] = { 0, 0, };
-    WCHAR instance_id_buffer[4096];
+    WCHAR buffer[4096];
     SP_DEVINFO_DATA devinfo_data;
 
     memset(&devinfo_data, 0x0, sizeof(devinfo_data));
@@ -65,27 +71,57 @@ void fill_dualsense_hid_setupdi_props(struct DualsenseInfo *dualsense, HDEVINFO 
             break;
 
         /* I actually don't think that's how games find it, XInput and other stuff may be involved, but it should be a good enough shortcut */
-        if (!SetupDiGetDeviceInstanceIdW(device_info_set, &devinfo_data, instance_id_buffer, 4096, &required_size))
+        if (!SetupDiGetDeviceInstanceIdW(device_info_set, &devinfo_data, buffer, 4096, &required_size))
             continue;
 
-        if (!wcsstr(instance_id_buffer, L"HID\\VID_054C&PID_0CE6"))
+        if (!wcsstr(buffer, L"HID\\VID_054C&PID_0CE6"))
             continue;
 
         if (dualsense->instanceID) {
           free(dualsense->instanceID);
         }
-        dualsense->instanceID = wcsdup(instance_id_buffer);
+        dualsense->instanceID = wcsdup(buffer);
 
         DWORD reg_data_type = 0;
         /* query SPDRP_BASE_CONTAINERID */
         if (!SetupDiGetDeviceRegistryPropertyW(device_info_set, &devinfo_data, 36, &reg_data_type, (PBYTE)guidstr, sizeof(guidstr), &required_size)) {
             guidstr[0] = 0;
+        } else {
+          if (guidstr[0]) {
+            dualsense->containerID = malloc(sizeof(GUID));
+            CLSIDFromString(guidstr, dualsense->containerID);
+          }
         }
-    }
 
-    if (guidstr[0]) {
-        dualsense->containerID = malloc(sizeof(GUID));
-        CLSIDFromString(guidstr, dualsense->containerID);
+        if (SetupDiGetDeviceRegistryPropertyW(device_info_set, &devinfo_data, SPDRP_CLASS, &reg_data_type, (PBYTE)buffer, 4096, &required_size)) {
+          dualsense->class = wcsdup(buffer);
+        }
+
+        if (SetupDiGetDeviceRegistryPropertyW(device_info_set, &devinfo_data, SPDRP_DRIVER, &reg_data_type, (PBYTE)buffer, 4096, &required_size)) {
+          dualsense->driverKey = wcsdup(buffer);
+        }
+
+        if (SetupDiGetDeviceRegistryPropertyW(device_info_set, &devinfo_data, SPDRP_FRIENDLYNAME, &reg_data_type, (PBYTE)buffer, 4096, &required_size)) {
+          dualsense->friendlyName = wcsdup(buffer);
+        }
+
+        if (SetupDiGetDeviceRegistryPropertyW(device_info_set, &devinfo_data, SPDRP_DEVICEDESC, &reg_data_type, (PBYTE)buffer, 4096, &required_size)) {
+          dualsense->deviceDesc = wcsdup(buffer);
+        }
+
+        if (SetupDiGetDeviceRegistryPropertyW(device_info_set, &devinfo_data, SPDRP_HARDWAREID, &reg_data_type, (PBYTE)buffer, 4096, &required_size)) {
+          dualsense->hardwareID = malloc(required_size);
+          memcpy(dualsense->hardwareID, buffer, required_size);
+        }
+
+        if (!SetupDiGetDeviceRegistryPropertyW(device_info_set, &devinfo_data, SPDRP_CLASSGUID, &reg_data_type, (PBYTE)guidstr, sizeof(guidstr), &required_size)) {
+            guidstr[0] = 0;
+        } else {
+          if (guidstr[0]) {
+            dualsense->classGUID = malloc(sizeof(GUID));
+            CLSIDFromString(guidstr, dualsense->classGUID);
+          }
+        }
     }
 }
 
@@ -473,6 +509,29 @@ int main(void)
         WCHAR wstr[39];
         StringFromGUID2(dualsense->containerID, wstr, 39*2);
         wprintf(L"  ContainerID: %S\n", wstr);
+    }
+    if (dualsense->class) {
+        wprintf(L"  SPDRP_CLASS: %S\n", dualsense->class);
+    }
+    if (dualsense->hardwareID) {
+      wprintf(L"  SDRP_HARDWAREID:\n");
+      for (int offset=0; dualsense->hardwareID[offset]; offset += wcslen(&dualsense->hardwareID[offset])) {
+        wprintf(L"    %S\n", &dualsense->hardwareID[offset]);
+      }
+    }
+    if (dualsense->driverKey) {
+        wprintf(L"  SPDRP_DRIVER: %S\n", dualsense->driverKey);
+    }
+    if (dualsense->friendlyName) {
+        wprintf(L"  SPDRP_FRIENDLYNAME: %S\n", dualsense->friendlyName);
+    }
+    if (dualsense->deviceDesc) {
+        wprintf(L"  SPDRP_DEVICEDESC: %S\n", dualsense->deviceDesc);
+    }
+    if (dualsense->classGUID) {
+        WCHAR wstr[39];
+        StringFromGUID2(dualsense->classGUID, wstr, 39*2);
+        wprintf(L"  SPDRP_CLASSGUID: %S\n", wstr);
     }
     if (!dualsense->containerID)
         wprintf(L"WARNING: ContainerID not set, although this is required for most games\n");
