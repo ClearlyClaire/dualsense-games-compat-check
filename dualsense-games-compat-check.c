@@ -18,13 +18,78 @@
 
 #include <xaudio2.h>
 
+#include <devpkey.h>
+
 DEFINE_PROPERTYKEY(PKEY_Device_FriendlyName, 0xa45c254e, 0xdf1c, 0x4efd, 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0, 14);
 DEFINE_PROPERTYKEY(PKEY_Device_ContainerId, 0x8c7ed206,0x3f8a,0x4827,0xb3,0xab,0xae,0x9e,0x1f,0xae,0xfc,0x6c, 2);
 
 GUID HIDInterfaceClassGuid           = { 0x4d1e55b2, 0xf16f, 0x11cf, {0x88, 0xcb, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30} };
 GUID AudioRendererInterfaceClassGuid = { 0xe6327cad, 0xdcec, 0x4949, {0xae, 0x8a, 0x99, 0x1e, 0x97, 0x6a, 0x79, 0xd2} };
 
-BOOL find_hid_device(WORD vendor_id, WORD product_id, WCHAR **serial_number, WCHAR **manufacturer, WCHAR **product, GUID **containerID) {
+struct DualsenseInfo {
+  WCHAR *serialNumber;
+  WCHAR *manufacturer;
+  WCHAR *product;
+  WCHAR *instanceID;
+  GUID *containerID;
+};
+
+void fill_dualsense_hidd_attributes(struct DualsenseInfo *dualsense, HANDLE handle) {
+    WCHAR wstr[256];
+
+    if (HidD_GetSerialNumberString(handle, wstr, sizeof(wstr))) {
+        wstr[255] = 0;
+        dualsense->serialNumber = wcsdup(wstr);
+    }
+    if (HidD_GetManufacturerString(handle, wstr, sizeof(wstr))) {
+        wstr[255] = 0;
+        dualsense->manufacturer = wcsdup(wstr);
+    }
+    if (HidD_GetProductString(handle, wstr, sizeof(wstr))) {
+        wstr[255] = 0;
+        dualsense->product = wcsdup(wstr);
+    }
+}
+
+void fill_dualsense_hid_setupdi_props(struct DualsenseInfo *dualsense, HDEVINFO device_info_set) {
+    DWORD required_size;
+    WCHAR guidstr[39] = { 0, 0, };
+    WCHAR instance_id_buffer[4096];
+    SP_DEVINFO_DATA devinfo_data;
+
+    memset(&devinfo_data, 0x0, sizeof(devinfo_data));
+    devinfo_data.cbSize = sizeof(SP_DEVINFO_DATA);
+
+    for (int j=0; ; j++) {
+        if (!SetupDiEnumDeviceInfo(device_info_set, j, &devinfo_data))
+            break;
+
+        /* I actually don't think that's how games find it, XInput and other stuff may be involved, but it should be a good enough shortcut */
+        if (!SetupDiGetDeviceInstanceIdW(device_info_set, &devinfo_data, instance_id_buffer, 4096, &required_size))
+            continue;
+
+        if (!wcsstr(instance_id_buffer, L"HID\\VID_054C&PID_0CE6"))
+            continue;
+
+        if (dualsense->instanceID) {
+          free(dualsense->instanceID);
+        }
+        dualsense->instanceID = wcsdup(instance_id_buffer);
+
+        DWORD reg_data_type = 0;
+        /* query SPDRP_BASE_CONTAINERID */
+        if (!SetupDiGetDeviceRegistryPropertyW(device_info_set, &devinfo_data, 36, &reg_data_type, (PBYTE)guidstr, sizeof(guidstr), &required_size)) {
+            guidstr[0] = 0;
+        }
+    }
+
+    if (guidstr[0]) {
+        dualsense->containerID = malloc(sizeof(GUID));
+        CLSIDFromString(guidstr, dualsense->containerID);
+    }
+}
+
+struct DualsenseInfo *find_hid_device(WORD vendor_id, WORD product_id) {
     HDEVINFO device_info_set = INVALID_HANDLE_VALUE;
     device_info_set = SetupDiGetClassDevsW(&HIDInterfaceClassGuid, NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
 
@@ -35,13 +100,8 @@ BOOL find_hid_device(WORD vendor_id, WORD product_id, WCHAR **serial_number, WCH
         device_interface_data.cbSize = sizeof(SP_DEVICE_INTERFACE_DATA);
 
         if (SetupDiEnumDeviceInterfaces(device_info_set, NULL, &HIDInterfaceClassGuid, member_index, &device_interface_data)) {
-            WCHAR guidstr[39] = { 0, 0, };
-            SP_DEVINFO_DATA devinfo_data;
             SP_DEVICE_INTERFACE_DETAIL_DATA_W *device_interface_detail_data = NULL;
             DWORD required_size;
-
-            memset(&devinfo_data, 0x0, sizeof(devinfo_data));
-            devinfo_data.cbSize = sizeof(SP_DEVINFO_DATA);
 
             /* Get required size */
             SetupDiGetDeviceInterfaceDetailW(device_info_set, &device_interface_data, NULL, 0, &required_size, NULL);
@@ -60,25 +120,6 @@ BOOL find_hid_device(WORD vendor_id, WORD product_id, WCHAR **serial_number, WCH
                 continue;
             }
 
-            for (int j=0; ; j++) {
-                WCHAR buffer[4096];
-                if (!SetupDiEnumDeviceInfo(device_info_set, j, &devinfo_data))
-                    break;
-
-                /* I actually don't think that's how games find it, XInput and other stuff may be involved, but it should be a good enough shortcut */
-                if (!SetupDiGetDeviceInstanceIdW(device_info_set, &devinfo_data, buffer, 4096, &required_size))
-                    continue;
-
-                if (!wcsstr(buffer, L"HID\\VID_054C&PID_0CE6"))
-                    continue;
-
-                DWORD reg_data_type = 0;
-                /* query SPDRP_BASE_CONTAINERID */
-                if (!SetupDiGetDeviceRegistryPropertyW(device_info_set, &devinfo_data, 36, &reg_data_type, (PBYTE)guidstr, sizeof(guidstr), &required_size)) {
-                    guidstr[0] = 0;
-                }
-            }
-
             HANDLE handle = CreateFileW(device_interface_detail_data->DevicePath, GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, 0);
             if (handle == INVALID_HANDLE_VALUE) {
                free(device_interface_detail_data);
@@ -89,29 +130,15 @@ BOOL find_hid_device(WORD vendor_id, WORD product_id, WCHAR **serial_number, WCH
             attrib.Size = sizeof(HIDD_ATTRIBUTES);
 
             if (HidD_GetAttributes(handle, &attrib) && attrib.VendorID == vendor_id && attrib.ProductID == product_id) {
-                WCHAR wstr[256];
+                // Found the controller, fill info
 
-                if (serial_number && HidD_GetSerialNumberString(handle, wstr, sizeof(wstr))) {
-                    wstr[255] = 0;
-                    *serial_number = wcsdup(wstr);
-                }
-                if (manufacturer && HidD_GetManufacturerString(handle, wstr, sizeof(wstr))) {
-                    wstr[255] = 0;
-                    *manufacturer = wcsdup(wstr);
-                }
-                if (product && HidD_GetProductString(handle, wstr, sizeof(wstr))) {
-                    wstr[255] = 0;
-                    *product = wcsdup(wstr);
-                }
-
-                if (guidstr[0]) {
-                    *containerID = malloc(sizeof(GUID));
-                    CLSIDFromString(guidstr, *containerID);
-                }
+                struct DualsenseInfo *dualsenseHidInfo = calloc(1, sizeof(struct DualsenseInfo));
+                fill_dualsense_hidd_attributes(dualsenseHidInfo, handle);
+                fill_dualsense_hid_setupdi_props(dualsenseHidInfo, device_info_set);
 
                 CloseHandle(handle);
 
-                return TRUE;
+                return dualsenseHidInfo;
             }
 
             CloseHandle(handle);
@@ -121,11 +148,11 @@ BOOL find_hid_device(WORD vendor_id, WORD product_id, WCHAR **serial_number, WCH
         }
     }
 
-    return FALSE;
+    return NULL;
 }
 
 
-BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, int *nb_matches, LPWSTR *devid, GUID **out_container_id, WAVEFORMATEX **fmt, REFERENCE_TIME *defperiod, REFERENCE_TIME *minperiod) {
+BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, int *nb_matches, LPWSTR *devid, GUID **out_container_id, WAVEFORMATEX **device_format, WAVEFORMATEX **fmt, REFERENCE_TIME *defperiod, REFERENCE_TIME *minperiod) {
     IMMDeviceEnumerator *it;
     IMMDeviceCollection *devs;
     HRESULT hr;
@@ -187,6 +214,15 @@ BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, 
             }
         }
 
+        if (device_format) {
+            PropVariantInit(&v);
+            hr = IPropertyStore_GetValue(props, &PKEY_AudioEngine_DeviceFormat, &v);
+            if (SUCCEEDED(hr) && v.vt == VT_BLOB) {
+                *device_format = malloc(v.blob.cbSize);
+                memcpy(*device_format, v.blob.pBlobData, v.blob.cbSize);
+            }
+        }
+
         *nb_matches += 1;
 
         hr = IMMDevice_GetId(dev, devid);
@@ -230,6 +266,67 @@ BOOL find_audio_render_by(const WCHAR *friendly_name, const GUID *container_id, 
 
     return FALSE;
 }
+
+#if 0
+BOOL spiderman_find_unknown(LPWSTR expected_id) {
+    // TODO: I'm actually not sure what Spider-Man *really* does here
+
+    WCHAR expected_instance_id[] = L"SWD\\MMDEVAPI\\{0.0.0.00000000}.{12345678-1234-1234-1234-123456789123}";
+    HDEVINFO device_info_set = INVALID_HANDLE_VALUE;
+    SP_DEVICE_INTERFACE_DETAIL_DATA_W *device_interface_detail_data = NULL;
+    device_info_set = SetupDiGetClassDevsExW(&HIDInterfaceClassGuid, NULL, 0, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE, NULL, NULL, 0);
+
+    for (DWORD member_index = 0; ; member_index++) {
+        SP_DEVICE_INTERFACE_DATA device_interface_data;
+
+        memset(&device_interface_data, 0, sizeof(SP_DEVICE_INTERFACE_DATA));
+        device_interface_data.cbSize = sizeof(SP_DEVICE_INTERFACE_DATA);
+
+        if (SetupDiEnumDeviceInterfaces(device_info_set, NULL, &HIDInterfaceClassGuid, member_index, &device_interface_data)) {
+            DEVPROPTYPE prop_type;
+            SP_DEVINFO_DATA devinfo_data;
+            DWORD required_size;
+
+            memset(&devinfo_data, 0x0, sizeof(devinfo_data));
+            devinfo_data.cbSize = sizeof(SP_DEVINFO_DATA);
+
+            /* Get required size */
+            SetupDiGetDeviceInterfaceDetailW(device_info_set, &device_interface_data, NULL, 0, &required_size, NULL);
+
+            device_interface_detail_data = calloc(1, required_size);
+            device_interface_detail_data->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+
+            /* Get actual interface detail data */
+            if (!SetupDiGetDeviceInterfaceDetailW(device_info_set, &device_interface_data, device_interface_detail_data, required_size, NULL, &devinfo_data)) {
+                free(device_interface_detail_data);
+                device_interface_detail_data = NULL;
+                continue;
+            }
+
+            wprintf(L"DEBUG interface data: %S\n", &device_interface_detail_data->DevicePath);
+
+            WCHAR buffer[4096];
+            if (!SetupDiGetDeviceInterfacePropertyW(device_info_set, &device_interface_data, DEVPKEY_Device_InstanceId, &prop_type, buffer, 510, NULL, 0)) {
+                free(device_interface_detail_data);
+                device_interface_detail_data = NULL;
+                continue;
+            }
+
+            wprintf(L"DEBUG: %S\n", buffer);
+
+            if (wcscmp(buffer, expected_instance_id) == 0) {
+                break;
+            }
+
+            free(device_interface_detail_data);
+            device_interface_detail_data = NULL;
+        } else {
+            if (ERROR_NO_MORE_ITEMS == GetLastError());
+                break;
+        }
+    }
+}
+#endif
 
 BOOL deathloop_find_speaker(LPWSTR expected_id) {
     HMODULE mXAudio2;
@@ -352,40 +449,43 @@ void dump_fmt(WAVEFORMATEX *fmt) {
 
 int main(void)
 {
-    WCHAR *serial_number = NULL, *manufacturer = NULL, *product = NULL;
-    GUID *containerID = NULL;
-    GUID *audio_containerID = NULL;
+    struct DualsenseInfo *dualsense = NULL;
     int nb_matches;
 
     /* First, find the controller HID */
     wprintf(L"Searching for the HID controller...\n");
-    if (!find_hid_device(0x054c, 0x0ce6, &serial_number, &manufacturer, &product, &containerID)) {
+    if (!(dualsense = find_hid_device(0x054c, 0x0ce6))) {
         wprintf(L"HID controller not found! Aborting.\n");
         return 1;
     }
 
     wprintf(L"DualSense controller found:\n");
-    if (manufacturer)
-        wprintf(L"  Manufacturer: %S\n", manufacturer);
-    if (product)
-        wprintf(L"  Product name: %S\n", product);
-    if (serial_number)
-        wprintf(L"  Serial number: %S\n", serial_number);
-    if (containerID) {
+    if (dualsense->manufacturer)
+        wprintf(L"  Manufacturer: %S\n", dualsense->manufacturer);
+    if (dualsense->product)
+        wprintf(L"  Product name: %S\n", dualsense->product);
+    if (dualsense->serialNumber)
+        wprintf(L"  Serial number: %S\n", dualsense->serialNumber);
+    if (dualsense->instanceID) {
+        wprintf(L"  InstanceID: %S\n", dualsense->instanceID);
+    }
+    if (dualsense->containerID) {
         WCHAR wstr[39];
-        StringFromGUID2(containerID, wstr, 39*2);
+        StringFromGUID2(dualsense->containerID, wstr, 39*2);
         wprintf(L"  ContainerID: %S\n", wstr);
     }
-    if (!containerID)
+    if (!dualsense->containerID)
         wprintf(L"WARNING: ContainerID not set, although this is required for most games\n");
 
+    GUID *audio_containerID = NULL;
+
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    WAVEFORMATEX *fmt;
+    WAVEFORMATEX *fmt, *device_fmt;
     REFERENCE_TIME defperiod, minperiod;
     LPWSTR devid = NULL;
 
     wprintf(L"\n\nSearching for audio output based on FriendlyName (Final Fantasy XIV Online, Final Fantasy VII Remake Intergrade)...\n");
-    if (find_audio_render_by(L"Wireless Controller", NULL, &nb_matches, &devid, &audio_containerID, &fmt, &defperiod, &minperiod)) {
+    if (find_audio_render_by(L"Wireless Controller", NULL, &nb_matches, &devid, &audio_containerID, &device_fmt, &fmt, &defperiod, &minperiod)) {
         wprintf(L"Found audio output!\n");
         wprintf(L"  Device ID: %S\n", devid);
         if (audio_containerID) {
@@ -393,6 +493,7 @@ int main(void)
             StringFromGUID2(audio_containerID, wstr, 39*2);
             wprintf(L"  ContainerID: %S\n", wstr);
         }
+        dump_fmt(device_fmt);
         dump_fmt(fmt);
         if (fmt->nChannels != 4)
             wprintf(L"WARNING: audio device does not have 4 channels, this is going to cause issues\n");
@@ -400,9 +501,9 @@ int main(void)
         wprintf(L"WARNING: audio output not found, haptics and speaker out won't work for Final Fantasy XIV Online and Final Fantasy VII Remake Intergrade\n");
     }
 
-    if(containerID) {
+    if(dualsense->containerID) {
         wprintf(L"\n\nSearching for audio output based on ContainerID (audio-based haptics in Ghostwire: Tokyo, Deathloop, ...)\n");
-        if (find_audio_render_by(NULL, containerID, &nb_matches, &devid, &audio_containerID, &fmt, &defperiod, &minperiod)) {
+        if (find_audio_render_by(NULL, dualsense->containerID, &nb_matches, &devid, &audio_containerID, &device_fmt, &fmt, &defperiod, &minperiod)) {
             wprintf(L"Found audio output!\n");
             wprintf(L"  Device ID: %S\n", devid);
             if (audio_containerID) {
@@ -410,6 +511,7 @@ int main(void)
                 StringFromGUID2(audio_containerID, wstr, 39*2);
                 wprintf(L"  ContainerID: %S\n", wstr);
             }
+            dump_fmt(device_fmt);
             dump_fmt(fmt);
             if (fmt->nChannels != 4)
                 wprintf(L"WARNING: audio device does not have 4 channels, this is going to cause issues\n");
